@@ -224,7 +224,7 @@ MIT License — свободное использование, модифика�
 
 ---
 
-## Что ещё добавить в GitHub
+## 
 
 ### 1. Файл `.gitignore`
 ```
@@ -242,7 +242,7 @@ macro_log.txt
 ```
 MIT License
 
-Copyright (c) 2026 Your Name
+Copyright (c) 2026 Aleksei
 
 Permission is hereby granted...
 ```
