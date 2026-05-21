@@ -1,0 +1,908 @@
+import pyautogui
+import random
+import time
+import keyboard
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import threading
+import json
+import os
+from datetime import datetime, time as dt_time
+import schedule
+import winsound
+from PIL import ImageGrab
+import pygetwindow as gw
+
+pyautogui.FAILSAFE = False
+
+class MacroClicker:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("MacroClicker v4.0 - Профессиональный автокликер")
+        self.root.geometry("950x900")
+        self.root.resizable(False, False)
+        
+        self.running = False
+        self.recording = False
+        self.thread = None
+        self.actions = []
+        self.current_profile = "default"
+        self.target_window = None
+        self.clicks_done = 0
+        self.start_time = None
+        self.scheduler_thread = None
+        self.schedule_running = False
+        
+        self.colors = {
+            'bg': '#f0f0f0',
+            'success': '#4CAF50',
+            'danger': '#f44336',
+            'warning': '#FF9800',
+            'info': '#2196F3'
+        }
+        
+        self.root.configure(bg=self.colors['bg'])
+        self.setup_ui()
+        self.load_profile(self.current_profile)
+        
+        keyboard.add_hotkey('f6', self.start)
+        keyboard.add_hotkey('f7', self.stop)
+        keyboard.add_hotkey('f8', self.toggle_recording)
+        
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.update_click_counter()
+    
+    def setup_ui(self):
+        title_frame = tk.Frame(self.root, bg=self.colors['info'], height=50)
+        title_frame.pack(fill="x")
+        title_frame.pack_propagate(False)
+        tk.Label(title_frame, text="MacroClicker v4.0", font=("Arial", 16, "bold"), 
+                 bg=self.colors['info'], fg="white").pack(pady=10)
+        
+        notebook = ttk.Notebook(self.root)
+        notebook.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        self.tab_macro = ttk.Frame(notebook)
+        notebook.add(self.tab_macro, text="Макрос")
+        self.tab_manual = ttk.Frame(notebook)
+        notebook.add(self.tab_manual, text="Ручной ввод")
+        self.tab_window = ttk.Frame(notebook)
+        notebook.add(self.tab_window, text="Привязка к окну")
+        self.tab_types = ttk.Frame(notebook)
+        notebook.add(self.tab_types, text="Типы действий")
+        self.tab_schedule = ttk.Frame(notebook)
+        notebook.add(self.tab_schedule, text="Расписание")
+        self.tab_settings = ttk.Frame(notebook)
+        notebook.add(self.tab_settings, text="Настройки")
+        self.tab_profiles = ttk.Frame(notebook)
+        notebook.add(self.tab_profiles, text="Профили")
+        
+        self.setup_macro_tab()
+        self.setup_manual_tab()
+        self.setup_window_tab()
+        self.setup_types_tab()
+        self.setup_schedule_tab()
+        self.setup_settings_tab()
+        self.setup_profiles_tab()
+        
+        self.status_var = tk.StringVar(value="Готов. F8 — запись, F6 — старт, F7 — стоп")
+        status_bar = tk.Label(self.root, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, 
+                              anchor=tk.W, font=("Arial", 9), bg='#ffffcc')
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # Контакты
+        tk.Label(self.root, text="По вопросам доработки: avt.nov@gmail.com", 
+                 font=("Arial", 8), fg="blue", bg=self.colors['bg']).pack(side=tk.BOTTOM, pady=2)
+    
+    def setup_macro_tab(self):
+        control_frame = tk.Frame(self.tab_macro)
+        control_frame.pack(fill="x", padx=10, pady=5)
+        tk.Button(control_frame, text="Записать (F8)", command=self.toggle_recording,
+                  bg=self.colors['warning'], fg="white", font=("Arial", 10, "bold"), width=15).pack(side="left", padx=2)
+        tk.Button(control_frame, text="Старт (F6)", command=self.start,
+                  bg=self.colors['success'], fg="white", font=("Arial", 10, "bold"), width=15).pack(side="left", padx=2)
+        tk.Button(control_frame, text="Стоп (F7)", command=self.stop,
+                  bg=self.colors['danger'], fg="white", font=("Arial", 10, "bold"), width=15).pack(side="left", padx=2)
+        tk.Button(control_frame, text="Очистить всё", command=self.clear_actions,
+                  bg='gray', fg="white", width=15).pack(side="left", padx=2)
+        
+        tk.Label(self.tab_macro, text="Список действий:", font=("Arial", 10, "bold")).pack(anchor="w", padx=10, pady=(10,0))
+        frame_list = tk.Frame(self.tab_macro)
+        frame_list.pack(fill="both", expand=True, padx=10, pady=5)
+        scrollbar = tk.Scrollbar(frame_list)
+        scrollbar.pack(side="right", fill="y")
+        self.actions_listbox = tk.Listbox(frame_list, yscrollcommand=scrollbar.set, height=12, font=("Courier", 9))
+        self.actions_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.actions_listbox.yview)
+        
+        edit_frame = tk.Frame(self.tab_macro)
+        edit_frame.pack(fill="x", padx=10, pady=5)
+        tk.Button(edit_frame, text="Удалить выбранное", command=self.delete_action,
+                  bg=self.colors['danger'], fg="white").pack(side="left", padx=2)
+        tk.Button(edit_frame, text="Вставить паузу", command=self.insert_delay,
+                  bg=self.colors['info'], fg="white").pack(side="left", padx=2)
+        
+        repeat_frame = tk.LabelFrame(self.tab_macro, text="Повтор макроса", padx=10, pady=5)
+        repeat_frame.pack(fill="x", padx=10, pady=5)
+        tk.Label(repeat_frame, text="Количество повторений:").pack(side="left", padx=5)
+        self.repeat_count = tk.Entry(repeat_frame, width=10)
+        self.repeat_count.insert(0, "0")
+        self.repeat_count.pack(side="left", padx=5)
+        tk.Label(repeat_frame, text="(0 = бесконечно)", fg="gray").pack(side="left")
+        
+        stats_frame = tk.LabelFrame(self.tab_macro, text="Статистика", padx=10, pady=5)
+        stats_frame.pack(fill="x", padx=10, pady=5)
+        self.clicks_label = tk.Label(stats_frame, text="Выполнено кликов: 0", font=("Arial", 10))
+        self.clicks_label.pack(anchor="w")
+        self.timer_label = tk.Label(stats_frame, text="Время работы: 00:00:00", font=("Arial", 10))
+        self.timer_label.pack(anchor="w")
+        
+        info_frame = tk.LabelFrame(self.tab_macro, text="Инструкция", padx=10, pady=5)
+        info_frame.pack(fill="x", padx=10, pady=5)
+        info_text = """1. Нажми F8 -> режим записи
+2. Сделай клики / скролл / ввод текста (запомнятся координаты и задержки)
+3. Нажми F8 снова -> остановить запись
+4. Нажми F6 -> запустить макрос
+5. Нажми F7 -> остановить"""
+        tk.Label(info_frame, text=info_text, justify="left", font=("Arial", 9), fg="gray").pack(anchor="w")
+    
+    def setup_manual_tab(self):
+        tk.Label(self.tab_manual, text="Ручное создание действий", font=("Arial", 12, "bold")).pack(pady=10)
+        capture_btn = tk.Button(self.tab_manual, text="ЗАХВАТИТЬ КООРДИНАТЫ (5 сек)", command=self.capture_with_timer,
+                                bg=self.colors['warning'], fg="white", font=("Arial", 12, "bold"), height=2)
+        capture_btn.pack(fill="x", padx=20, pady=10)
+        
+        input_frame = tk.LabelFrame(self.tab_manual, text="Добавить клик", padx=15, pady=15)
+        input_frame.pack(fill="x", padx=20, pady=10)
+        coord_frame = tk.Frame(input_frame)
+        coord_frame.pack(pady=5)
+        tk.Label(coord_frame, text="X (пиксели):").pack(side="left", padx=5)
+        self.manual_x = tk.Entry(coord_frame, width=8)
+        self.manual_x.pack(side="left", padx=5)
+        tk.Label(coord_frame, text="Y (пиксели):").pack(side="left", padx=5)
+        self.manual_y = tk.Entry(coord_frame, width=8)
+        self.manual_y.pack(side="left", padx=5)
+        delay_frame = tk.Frame(input_frame)
+        delay_frame.pack(pady=5)
+        tk.Label(delay_frame, text="Задержка (сек):").pack(side="left", padx=5)
+        self.manual_delay = tk.Entry(delay_frame, width=8)
+        self.manual_delay.insert(0, "1.0")
+        self.manual_delay.pack(side="left", padx=5)
+        btn_frame = tk.Frame(input_frame)
+        btn_frame.pack(pady=10)
+        tk.Button(btn_frame, text="Добавить клик", command=self.add_manual_click,
+                  bg=self.colors['success'], fg="white", width=20).pack(side="left", padx=5)
+        tk.Button(btn_frame, text="Показать позицию", command=self.show_current_position,
+                  bg=self.colors['info'], fg="white", width=20).pack(side="left", padx=5)
+        
+        self.manual_listbox = tk.Listbox(self.tab_manual, height=8, font=("Courier", 9))
+        self.manual_listbox.pack(fill="both", expand=True, padx=20, pady=5)
+    
+    def setup_window_tab(self):
+        info_frame = tk.LabelFrame(self.tab_window, text="Привязка к окну", padx=10, pady=10)
+        info_frame.pack(fill="x", padx=10, pady=10)
+        tk.Label(info_frame, text="Привязка позволяет кликать в нужные места даже после перемещения окна.", 
+                 justify="left", fg="blue").pack(anchor="w")
+        
+        select_frame = tk.Frame(self.tab_window)
+        select_frame.pack(fill="x", padx=10, pady=5)
+        tk.Label(select_frame, text="Целевое окно:").pack(side="left", padx=5)
+        self.window_name = tk.Entry(select_frame, width=40)
+        self.window_name.pack(side="left", padx=5)
+        tk.Button(select_frame, text="Выбрать окно (5 сек)", command=self.select_window,
+                  bg=self.colors['warning'], fg="white").pack(side="left", padx=5)
+        self.window_info_var = tk.StringVar(value="Окно не выбрано")
+        tk.Label(self.tab_window, textvariable=self.window_info_var, fg="gray").pack(anchor="w", padx=10)
+        
+        tk.Label(self.tab_window, text="Активные окна:", font=("Arial", 10, "bold")).pack(anchor="w", padx=10)
+        list_frame = tk.Frame(self.tab_window)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side="right", fill="y")
+        self.window_listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, height=10)
+        self.window_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.window_listbox.yview)
+        tk.Button(self.tab_window, text="Обновить список", command=self.refresh_window_list,
+                  bg=self.colors['info'], fg="white").pack(pady=5)
+        self.refresh_window_list()
+    
+    def setup_types_tab(self):
+        types_frame = tk.LabelFrame(self.tab_types, text="Типы действий", padx=10, pady=10)
+        types_frame.pack(fill="x", padx=10, pady=10)
+        
+        tk.Label(types_frame, text="Клик правой кнопкой", font=("Arial", 10, "bold")).grid(row=0, column=0, sticky="w", pady=2)
+        tk.Label(types_frame, text="Контекстное меню", font=("Arial", 9)).grid(row=0, column=1, sticky="w", pady=2)
+        self.right_click_btn = tk.Button(types_frame, text="Добавить правый клик", command=self.add_right_click,
+                                         bg=self.colors['info'], fg="white")
+        self.right_click_btn.grid(row=0, column=2, padx=10, pady=2)
+        
+        tk.Label(types_frame, text="Двойной клик", font=("Arial", 10, "bold")).grid(row=1, column=0, sticky="w", pady=2)
+        tk.Label(types_frame, text="Быстрое открытие", font=("Arial", 9)).grid(row=1, column=1, sticky="w", pady=2)
+        self.double_click_btn = tk.Button(types_frame, text="Добавить двойной клик", command=self.add_double_click,
+                                          bg=self.colors['info'], fg="white")
+        self.double_click_btn.grid(row=1, column=2, padx=10, pady=2)
+        
+        tk.Label(types_frame, text="Скролл колёсика", font=("Arial", 10, "bold")).grid(row=2, column=0, sticky="w", pady=2)
+        tk.Label(types_frame, text="Прокрутка страниц", font=("Arial", 9)).grid(row=2, column=1, sticky="w", pady=2)
+        scroll_frame = tk.Frame(types_frame)
+        scroll_frame.grid(row=2, column=2, padx=10, pady=2)
+        self.scroll_amount = tk.Entry(scroll_frame, width=5)
+        self.scroll_amount.insert(0, "3")
+        self.scroll_amount.pack(side="left")
+        tk.Button(scroll_frame, text="Вверх", command=lambda: self.add_scroll(3), bg='lightgreen').pack(side="left", padx=2)
+        tk.Button(scroll_frame, text="Вниз", command=lambda: self.add_scroll(-3), bg='lightcoral').pack(side="left")
+        
+        tk.Label(types_frame, text="Ввод текста", font=("Arial", 10, "bold")).grid(row=3, column=0, sticky="w", pady=2)
+        tk.Label(types_frame, text="Печать текста", font=("Arial", 9)).grid(row=3, column=1, sticky="w", pady=2)
+        text_frame = tk.Frame(types_frame)
+        text_frame.grid(row=3, column=2, padx=10, pady=2)
+        self.text_entry = tk.Entry(text_frame, width=20)
+        self.text_entry.pack(side="left")
+        tk.Button(text_frame, text="Добавить текст", command=self.add_text_input, bg=self.colors['success'], fg="white").pack(side="left", padx=5)
+    
+    def setup_schedule_tab(self):
+        schedule_frame = tk.LabelFrame(self.tab_schedule, text="Расписание запуска", padx=10, pady=10)
+        schedule_frame.pack(fill="x", padx=10, pady=10)
+        
+        tk.Label(schedule_frame, text="Время старта (ЧЧ:ММ):").grid(row=0, column=0, pady=2, padx=5)
+        self.schedule_start = tk.Entry(schedule_frame, width=10)
+        self.schedule_start.insert(0, "09:00")
+        self.schedule_start.grid(row=0, column=1, padx=5)
+        
+        tk.Label(schedule_frame, text="Время окончания (ЧЧ:ММ):").grid(row=1, column=0, pady=2, padx=5)
+        self.schedule_end = tk.Entry(schedule_frame, width=10)
+        self.schedule_end.insert(0, "21:00")
+        self.schedule_end.grid(row=1, column=1, padx=5)
+        
+        tk.Label(schedule_frame, text="Дни недели:").grid(row=2, column=0, pady=2, padx=5)
+        days_frame = tk.Frame(schedule_frame)
+        days_frame.grid(row=2, column=1, columnspan=2, sticky="w")
+        self.days_vars = {}
+        days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+        for i, day in enumerate(days):
+            var = tk.BooleanVar(value=(i < 5))
+            self.days_vars[day] = var
+            tk.Checkbutton(days_frame, text=day, variable=var).pack(side="left", padx=2)
+        
+        tk.Button(schedule_frame, text="Запустить планировщик", command=self.start_scheduler,
+                  bg=self.colors['success'], fg="white", width=20).grid(row=3, column=0, pady=10, padx=5)
+        tk.Button(schedule_frame, text="Остановить планировщик", command=self.stop_scheduler,
+                  bg=self.colors['danger'], fg="white", width=20).grid(row=3, column=1, pady=10, padx=5)
+        self.schedule_status = tk.Label(schedule_frame, text="Планировщик не активен", fg="gray")
+        self.schedule_status.grid(row=4, column=0, columnspan=2, pady=5)
+    
+    def setup_settings_tab(self):
+        interval_frame = tk.LabelFrame(self.tab_settings, text="Интервалы", padx=10, pady=10)
+        interval_frame.pack(fill="x", padx=10, pady=5)
+        tk.Label(interval_frame, text="Задержка (сек):").grid(row=0, column=0, padx=5)
+        self.delay_from = tk.Entry(interval_frame, width=8)
+        self.delay_from.insert(0, "0.5")
+        self.delay_from.grid(row=0, column=1, padx=5)
+        tk.Label(interval_frame, text="до").grid(row=0, column=2)
+        self.delay_to = tk.Entry(interval_frame, width=8)
+        self.delay_to.insert(0, "1.5")
+        self.delay_to.grid(row=0, column=3, padx=5)
+        tk.Label(interval_frame, text="сек").grid(row=0, column=4)
+        
+        jitter_frame = tk.LabelFrame(self.tab_settings, text="Рандомизация", padx=10, pady=10)
+        jitter_frame.pack(fill="x", padx=10, pady=5)
+        tk.Label(jitter_frame, text="Случайное смещение (пикс):").pack(side="left", padx=5)
+        self.jitter = tk.Entry(jitter_frame, width=8)
+        self.jitter.insert(0, "5")
+        self.jitter.pack(side="left", padx=5)
+        tk.Label(jitter_frame, text="Случайная микро-задержка (сек):").pack(side="left", padx=10)
+        self.micro_jitter = tk.Entry(jitter_frame, width=8)
+        self.micro_jitter.insert(0, "0.3")
+        self.micro_jitter.pack(side="left", padx=5)
+        
+        anti_frame = tk.LabelFrame(self.tab_settings, text="Антидетект", padx=10, pady=10)
+        anti_frame.pack(fill="x", padx=10, pady=5)
+        self.random_skip = tk.BooleanVar(value=True)
+        tk.Checkbutton(anti_frame, text="Случайные пропуски циклов (5%)", variable=self.random_skip).pack(anchor="w")
+        self.limit_time = tk.BooleanVar(value=False)
+        tk.Checkbutton(anti_frame, text="Ограничить время работы", variable=self.limit_time).pack(anchor="w")
+        time_limit_frame = tk.Frame(anti_frame)
+        time_limit_frame.pack(anchor="w", padx=20)
+        tk.Label(time_limit_frame, text="Работать (минут):").pack(side="left")
+        self.time_limit_min = tk.Entry(time_limit_frame, width=8)
+        self.time_limit_min.insert(0, "60")
+        self.time_limit_min.pack(side="left", padx=5)
+        
+        sound_frame = tk.LabelFrame(self.tab_settings, text="Звук и скриншоты", padx=10, pady=10)
+        sound_frame.pack(fill="x", padx=10, pady=5)
+        self.sound_enabled = tk.BooleanVar(value=True)
+        tk.Checkbutton(sound_frame, text="Звук при старте/стопе", variable=self.sound_enabled).pack(anchor="w")
+        self.screenshot_enabled = tk.BooleanVar(value=False)
+        tk.Checkbutton(sound_frame, text="Делать скриншоты (каждый цикл)", variable=self.screenshot_enabled).pack(anchor="w")
+        
+        extra_frame = tk.LabelFrame(self.tab_settings, text="Дополнительно", padx=10, pady=10)
+        extra_frame.pack(fill="x", padx=10, pady=5)
+        self.auto_start = tk.BooleanVar(value=True)
+        tk.Checkbutton(extra_frame, text="Авто-старт нового цикла", variable=self.auto_start).pack(anchor="w")
+        self.log_enabled = tk.BooleanVar(value=True)
+        tk.Checkbutton(extra_frame, text="Вести лог (macro_log.txt)", variable=self.log_enabled).pack(anchor="w")
+        
+        disclaimer = tk.LabelFrame(self.tab_settings, text="Важно", padx=10, pady=10)
+        disclaimer.pack(fill="x", padx=10, pady=5)
+        tk.Label(disclaimer, text="Программа предназначена для автоматизации рутинных действий пользователя "
+                 "на свой страх и риск. Использование для нарушения пользовательских соглашений или законов — "
+                 "ответственность пользователя. Автор не несёт ответственности за блокировки аккаунтов, баны или "
+                 "иные последствия.", justify="left", fg="red", wraplength=600).pack(anchor="w")
+    
+    def setup_profiles_tab(self):
+        save_frame = tk.Frame(self.tab_profiles)
+        save_frame.pack(fill="x", padx=10, pady=10)
+        tk.Label(save_frame, text="Имя профиля:").pack(side="left", padx=5)
+        self.profile_name = tk.Entry(save_frame, width=25)
+        self.profile_name.insert(0, "my_profile")
+        self.profile_name.pack(side="left", padx=5)
+        tk.Button(save_frame, text="СОХРАНИТЬ", command=self.save_profile,
+                  bg=self.colors['success'], fg="white", width=12).pack(side="left", padx=5)
+        tk.Button(save_frame, text="ЗАГРУЗИТЬ", command=self.load_profile_dialog,
+                  bg=self.colors['info'], fg="white", width=12).pack(side="left", padx=5)
+        
+        tk.Label(self.tab_profiles, text="Сохранённые профили:", font=("Arial", 10, "bold")).pack(anchor="w", padx=10)
+        list_frame = tk.Frame(self.tab_profiles)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side="right", fill="y")
+        self.profiles_listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, height=10)
+        self.profiles_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.profiles_listbox.yview)
+        self.profiles_listbox.bind('<Double-Button-1>', self.load_selected_profile)
+        self.refresh_profiles_list()
+    
+    def refresh_window_list(self):
+        self.window_listbox.delete(0, tk.END)
+        try:
+            for w in gw.getAllTitles():
+                if w.strip():
+                    self.window_listbox.insert(tk.END, w)
+        except:
+            pass
+    
+    def select_window(self):
+        def select():
+            for i in range(5, 0, -1):
+                self.status_var.set(f"Выбор окна через {i} сек... Наведи мышь на целевое окно")
+                time.sleep(1)
+            x, y = pyautogui.position()
+            try:
+                window = gw.getWindowAt(x, y)
+                if window:
+                    self.target_window = window
+                    self.window_name.delete(0, tk.END)
+                    self.window_name.insert(0, window.title)
+                    self.window_info_var.set(f"Выбрано: {window.title}")
+                    self.status_var.set(f"Окно выбрано: {window.title}")
+                    if self.sound_enabled.get():
+                        winsound.Beep(800, 300)
+                else:
+                    self.status_var.set("Окно не найдено")
+            except Exception as e:
+                self.status_var.set(f"Ошибка: {e}")
+        threading.Thread(target=select, daemon=True).start()
+    
+    def capture_with_timer(self):
+        def capture():
+            for i in range(5, 0, -1):
+                self.status_var.set(f"Захват через {i} сек... Наведи мышь на кнопку")
+                time.sleep(1)
+            x, y = pyautogui.position()
+            if self.target_window and self.target_window.title == self.window_name.get():
+                try:
+                    rel_x = x - self.target_window.left
+                    rel_y = y - self.target_window.top
+                    self.status_var.set(f"Захвачено относит. X={rel_x}, Y={rel_y}")
+                    self.manual_x.delete(0, tk.END)
+                    self.manual_x.insert(0, str(rel_x))
+                    self.manual_y.delete(0, tk.END)
+                    self.manual_y.insert(0, str(rel_y))
+                except:
+                    self.manual_x.delete(0, tk.END)
+                    self.manual_x.insert(0, str(x))
+                    self.manual_y.delete(0, tk.END)
+                    self.manual_y.insert(0, str(y))
+            else:
+                self.manual_x.delete(0, tk.END)
+                self.manual_x.insert(0, str(x))
+                self.manual_y.delete(0, tk.END)
+                self.manual_y.insert(0, str(y))
+                self.status_var.set(f"Захвачено абсолют. X={x}, Y={y}")
+            if self.sound_enabled.get():
+                winsound.Beep(1000, 200)
+        threading.Thread(target=capture, daemon=True).start()
+    
+    def add_manual_click(self):
+        try:
+            x = int(self.manual_x.get())
+            y = int(self.manual_y.get())
+            delay = float(self.manual_delay.get())
+            action = {'type': 'click', 'x': x, 'y': y, 'delay': delay, 'button': 'left'}
+            if self.target_window and self.target_window.title == self.window_name.get():
+                action['window_title'] = self.target_window.title
+            self.actions.append(action)
+            self.update_actions_list()
+            self.status_var.set(f"Добавлен клик ({x},{y}) задержка {delay} сек")
+        except:
+            messagebox.showerror("Ошибка", "Введите корректные X, Y и задержку")
+    
+    def add_right_click(self):
+        try:
+            x = int(self.manual_x.get()) if self.manual_x.get() else 0
+            y = int(self.manual_y.get()) if self.manual_y.get() else 0
+            delay = float(self.manual_delay.get())
+            action = {'type': 'right_click', 'x': x, 'y': y, 'delay': delay}
+            if self.target_window and self.target_window.title == self.window_name.get():
+                action['window_title'] = self.target_window.title
+            self.actions.append(action)
+            self.update_actions_list()
+            self.status_var.set(f"Добавлен правый клик ({x},{y})")
+        except:
+            messagebox.showerror("Ошибка", "Введите координаты")
+    
+    def add_double_click(self):
+        try:
+            x = int(self.manual_x.get()) if self.manual_x.get() else 0
+            y = int(self.manual_y.get()) if self.manual_y.get() else 0
+            delay = float(self.manual_delay.get())
+            action = {'type': 'double_click', 'x': x, 'y': y, 'delay': delay}
+            if self.target_window and self.target_window.title == self.window_name.get():
+                action['window_title'] = self.target_window.title
+            self.actions.append(action)
+            self.update_actions_list()
+            self.status_var.set(f"Добавлен двойной клик ({x},{y})")
+        except:
+            messagebox.showerror("Ошибка", "Введите координаты")
+    
+    def add_scroll(self, amount):
+        action = {'type': 'scroll', 'amount': amount, 'delay': 0.2}
+        self.actions.append(action)
+        self.update_actions_list()
+        self.status_var.set(f"Добавлен скролл {'вверх' if amount>0 else 'вниз'}")
+    
+    def add_text_input(self):
+        text = self.text_entry.get()
+        if text:
+            action = {'type': 'text', 'text': text, 'delay': 0.5}
+            self.actions.append(action)
+            self.update_actions_list()
+            self.status_var.set(f"Добавлен ввод текста: {text[:20]}")
+        else:
+            messagebox.showwarning("Внимание", "Введите текст")
+    
+    def show_current_position(self):
+        x, y = pyautogui.position()
+        self.status_var.set(f"Текущая позиция: X={x}, Y={y}")
+        messagebox.showinfo("Позиция мыши", f"X={x}\nY={y}")
+    
+    def insert_delay(self):
+        selection = self.actions_listbox.curselection()
+        index = selection[0] if selection else len(self.actions)
+        delay_win = tk.Toplevel(self.root)
+        delay_win.title("Вставить паузу")
+        delay_win.geometry("300x150")
+        tk.Label(delay_win, text="Пауза (секунд):").pack(pady=10)
+        delay_entry = tk.Entry(delay_win)
+        delay_entry.pack(pady=5)
+        def add():
+            try:
+                delay = float(delay_entry.get())
+                self.actions.insert(index, {'type': 'pause', 'duration': delay})
+                self.update_actions_list()
+                delay_win.destroy()
+                self.status_var.set(f"Пауза {delay} сек добавлена")
+            except:
+                messagebox.showerror("Ошибка", "Введите число")
+        tk.Button(delay_win, text="Вставить", command=add, bg=self.colors['success']).pack(pady=10)
+    
+    def delete_action(self):
+        selection = self.actions_listbox.curselection()
+        if selection:
+            index = selection[0]
+            del self.actions[index]
+            self.update_actions_list()
+            self.status_var.set(f"Действие {index+1} удалено")
+    
+    def clear_actions(self):
+        if messagebox.askyesno("Подтверждение", "Очистить все действия?"):
+            self.actions = []
+            self.update_actions_list()
+            self.status_var.set("Список действий очищен")
+    
+    def update_actions_list(self):
+        self.actions_listbox.delete(0, tk.END)
+        self.manual_listbox.delete(0, tk.END)
+        for i, a in enumerate(self.actions):
+            if a['type'] == 'pause':
+                text = f"{i+1}. ПАУЗА {a['duration']} сек"
+            elif a['type'] == 'click':
+                text = f"{i+1}. КЛИК ({a['x']},{a['y']}) задержка {a['delay']:.2f} сек"
+            elif a['type'] == 'right_click':
+                text = f"{i+1}. ПРАВЫЙ КЛИК ({a['x']},{a['y']})"
+            elif a['type'] == 'double_click':
+                text = f"{i+1}. ДВОЙНОЙ КЛИК ({a['x']},{a['y']})"
+            elif a['type'] == 'scroll':
+                text = f"{i+1}. СКРОЛЛ {'ВВЕРХ' if a['amount']>0 else 'ВНИЗ'} ({abs(a['amount'])})"
+            elif a['type'] == 'text':
+                text = f"{i+1}. ТЕКСТ: {a['text'][:30]}"
+            else:
+                text = f"{i+1}. НЕИЗВЕСТНО"
+            self.actions_listbox.insert(tk.END, text)
+            self.manual_listbox.insert(tk.END, text)
+    
+    def toggle_recording(self):
+        if not self.recording:
+            self.recording = True
+            self.actions = []
+            self.update_actions_list()
+            self.status_var.set("РЕЖИМ ЗАПИСИ... Делай действия. F8 — остановить")
+            self.record_thread = threading.Thread(target=self.record_clicks, daemon=True)
+            self.record_thread.start()
+            if self.sound_enabled.get():
+                winsound.Beep(1200, 200)
+        else:
+            self.recording = False
+            self.status_var.set(f"Запись завершена. Добавлено {len(self.actions)} действий")
+            if self.sound_enabled.get():
+                winsound.Beep(800, 300)
+    
+    def record_clicks(self):
+        from pynput import mouse
+        last_time = time.time()
+        def on_click(x, y, button, pressed):
+            nonlocal last_time
+            if pressed and self.recording:
+                now = time.time()
+                delay = now - last_time
+                action = {'type': 'click', 'delay': delay, 'button': str(button)}
+                if self.target_window and self.target_window.title == self.window_name.get():
+                    try:
+                        action['x'] = x - self.target_window.left
+                        action['y'] = y - self.target_window.top
+                        action['window_title'] = self.target_window.title
+                    except:
+                        action['x'] = x
+                        action['y'] = y
+                else:
+                    action['x'] = x
+                    action['y'] = y
+                self.actions.append(action)
+                self.root.after(0, self.update_actions_list)
+                last_time = now
+        listener = mouse.Listener(on_click=on_click)
+        listener.start()
+        while self.recording:
+            time.sleep(0.1)
+        listener.stop()
+    
+    def execute_action(self, action):
+        # Рандомная микро-задержка перед действием (антидетект)
+        try:
+            micro = float(self.micro_jitter.get())
+            time.sleep(random.uniform(0, micro))
+        except:
+            time.sleep(random.uniform(0, 0.3))
+        
+        if action['type'] == 'pause':
+            time.sleep(action['duration'])
+            self.log(f"Пауза {action['duration']} сек")
+        elif action['type'] == 'click':
+            jitter = int(self.jitter.get()) if self.jitter.get() else 5
+            if self.target_window and 'window_title' in action and self.target_window.title == action.get('window_title', ''):
+                try:
+                    x = self.target_window.left + action['x'] + random.randint(-jitter, jitter)
+                    y = self.target_window.top + action['y'] + random.randint(-jitter, jitter)
+                except:
+                    x = action['x'] + random.randint(-jitter, jitter)
+                    y = action['y'] + random.randint(-jitter, jitter)
+            else:
+                x = action['x'] + random.randint(-jitter, jitter)
+                y = action['y'] + random.randint(-jitter, jitter)
+            wait = action.get('delay', random.uniform(0.5, 1.5))
+            time.sleep(wait)
+            pyautogui.click(x, y)
+            self.clicks_done += 1
+            self.update_click_counter()
+            self.log(f"Клик ({x},{y}) задержка {wait:.2f} сек")
+        elif action['type'] == 'right_click':
+            jitter = int(self.jitter.get()) if self.jitter.get() else 5
+            if self.target_window and 'window_title' in action:
+                try:
+                    x = self.target_window.left + action['x'] + random.randint(-jitter, jitter)
+                    y = self.target_window.top + action['y'] + random.randint(-jitter, jitter)
+                except:
+                    x = action['x'] + random.randint(-jitter, jitter)
+                    y = action['y'] + random.randint(-jitter, jitter)
+            else:
+                x = action['x'] + random.randint(-jitter, jitter)
+                y = action['y'] + random.randint(-jitter, jitter)
+            time.sleep(action.get('delay', 0.5))
+            pyautogui.rightClick(x, y)
+            self.clicks_done += 1
+            self.update_click_counter()
+            self.log(f"Правый клик ({x},{y})")
+        elif action['type'] == 'double_click':
+            jitter = int(self.jitter.get()) if self.jitter.get() else 5
+            if self.target_window and 'window_title' in action:
+                try:
+                    x = self.target_window.left + action['x'] + random.randint(-jitter, jitter)
+                    y = self.target_window.top + action['y'] + random.randint(-jitter, jitter)
+                except:
+                    x = action['x'] + random.randint(-jitter, jitter)
+                    y = action['y'] + random.randint(-jitter, jitter)
+            else:
+                x = action['x'] + random.randint(-jitter, jitter)
+                y = action['y'] + random.randint(-jitter, jitter)
+            time.sleep(action.get('delay', 0.5))
+            pyautogui.doubleClick(x, y)
+            self.clicks_done += 2
+            self.update_click_counter()
+            self.log(f"Двойной клик ({x},{y})")
+        elif action['type'] == 'scroll':
+            pyautogui.scroll(action['amount'])
+            self.log(f"Скролл {action['amount']}")
+        elif action['type'] == 'text':
+            pyautogui.write(action['text'])
+            self.log(f"Ввод текста: {action['text'][:30]}")
+        else:
+            self.log(f"Неизвестное действие: {action}")
+        
+        if self.screenshot_enabled.get():
+            self.make_screenshot()
+    
+    def make_screenshot(self):
+        try:
+            os.makedirs("screenshots", exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            img = ImageGrab.grab()
+            img.save(f"screenshots/screenshot_{timestamp}.png")
+            self.log(f"Скриншот сохранён: screenshot_{timestamp}.png")
+        except Exception as e:
+            self.log(f"Ошибка скриншота: {e}")
+    
+    def update_click_counter(self):
+        self.clicks_label.config(text=f"Выполнено кликов: {self.clicks_done}")
+        if self.start_time:
+            elapsed = int(time.time() - self.start_time)
+            hours = elapsed // 3600
+            minutes = (elapsed % 3600) // 60
+            seconds = elapsed % 60
+            self.timer_label.config(text=f"Время работы: {hours:02d}:{minutes:02d}:{seconds:02d}")
+    
+    def log(self, message):
+        if not self.log_enabled.get():
+            return
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        log_msg = f"[{timestamp}] {message}"
+        print(log_msg)
+        try:
+            with open("macro_log.txt", "a", encoding="utf-8") as f:
+                f.write(log_msg + "\n")
+        except Exception:
+            pass
+    
+    def macro_worker(self):
+        if not self.actions:
+            self.status_var.set("Ошибка: нет действий")
+            return
+        max_repeats = int(self.repeat_count.get()) if self.repeat_count.get() else 0
+        cycle = 0
+        while self.running:
+            cycle += 1
+            if max_repeats > 0 and cycle > max_repeats:
+                self.status_var.set(f"Макрос завершён: {max_repeats} циклов")
+                self.running = False
+                break
+            
+            # Случайный пропуск цикла (5%)
+            if self.random_skip.get() and random.random() < 0.05:
+                self.log(f"Случайный пропуск цикла {cycle}")
+                continue
+            
+            # Проверка ограничения по времени работы
+            if self.limit_time.get():
+                try:
+                    limit_min = int(self.time_limit_min.get())
+                    if self.start_time and (time.time() - self.start_time) > limit_min * 60:
+                        self.status_var.set(f"Достигнут лимит времени {limit_min} мин. Остановка.")
+                        self.running = False
+                        break
+                except:
+                    pass
+            
+            self.status_var.set(f"Цикл {cycle}/{max_repeats if max_repeats>0 else '∞'}")
+            for i, act in enumerate(self.actions):
+                if not self.running:
+                    return
+                self.status_var.set(f"Действие {i+1}/{len(self.actions)} (цикл {cycle})")
+                try:
+                    self.execute_action(act)
+                except Exception as e:
+                    self.status_var.set(f"Ошибка: {e}")
+                    self.log(f"ОШИБКА: {e}")
+            if self.auto_start.get() and self.running:
+                wait = random.randint(2, 5)
+                for _ in range(wait):
+                    if not self.running:
+                        return
+                    time.sleep(1)
+    
+    def start(self):
+        if not self.actions:
+            messagebox.showwarning("Внимание", "Нет действий. Запишите макрос (F8) или добавьте вручную.")
+            return
+        if not self.running:
+            self.running = True
+            self.clicks_done = 0
+            self.start_time = time.time()
+            self.update_click_counter()
+            self.status_var.set("Макрос запущен")
+            if self.sound_enabled.get():
+                winsound.Beep(1000, 500)
+            self.thread = threading.Thread(target=self.macro_worker, daemon=True)
+            self.thread.start()
+    
+    def stop(self):
+        self.running = False
+        self.status_var.set("Макрос остановлен (F7)")
+        if self.sound_enabled.get():
+            winsound.Beep(600, 400)
+    
+    def start_scheduler(self):
+        def scheduler_loop():
+            schedule.clear()
+            start_time = self.schedule_start.get()
+            end_time = self.schedule_end.get()
+            days_map = {"Пн": 0, "Вт": 1, "Ср": 2, "Чт": 3, "Пт": 4, "Сб": 5, "Вс": 6}
+            selected_days = [days_map[d] for d, var in self.days_vars.items() if var.get()]
+            if not selected_days:
+                self.schedule_status.config(text="Не выбраны дни", fg="red")
+                return
+            
+            def job():
+                now = datetime.now()
+                if now.weekday() in selected_days:
+                    start_dt = datetime.strptime(start_time, "%H:%M").time()
+                    end_dt = datetime.strptime(end_time, "%H:%M").time()
+                    if start_dt <= now.time() <= end_dt:
+                        if not self.running:
+                            self.start()
+                    else:
+                        if self.running:
+                            self.stop()
+            
+            schedule.every(1).minutes.do(job)
+            self.schedule_running = True
+            self.schedule_status.config(text=f"Планировщик активен ({start_time}-{end_time})", fg="green")
+            while self.schedule_running:
+                schedule.run_pending()
+                time.sleep(1)
+        
+        if self.scheduler_thread and self.scheduler_thread.is_alive():
+            messagebox.showinfo("Инфо", "Планировщик уже запущен")
+            return
+        self.scheduler_thread = threading.Thread(target=scheduler_loop, daemon=True)
+        self.scheduler_thread.start()
+    
+    def stop_scheduler(self):
+        self.schedule_running = False
+        self.schedule_status.config(text="Планировщик остановлен", fg="gray")
+    
+    def save_profile(self):
+        if not self.actions:
+            messagebox.showwarning("Внимание", "Нет действий для сохранения")
+            return
+        name = self.profile_name.get().strip()
+        if not name:
+            messagebox.showwarning("Внимание", "Введите имя профиля")
+            return
+        os.makedirs("profiles", exist_ok=True)
+        data = {
+            'actions': self.actions,
+            'settings': {
+                'delay_from': self.delay_from.get(),
+                'delay_to': self.delay_to.get(),
+                'jitter': self.jitter.get(),
+                'micro_jitter': self.micro_jitter.get(),
+                'auto_start': self.auto_start.get(),
+                'repeat_count': self.repeat_count.get(),
+                'random_skip': self.random_skip.get(),
+                'limit_time': self.limit_time.get(),
+                'time_limit_min': self.time_limit_min.get(),
+                'sound_enabled': self.sound_enabled.get(),
+                'screenshot_enabled': self.screenshot_enabled.get()
+            }
+        }
+        with open(f"profiles/{name}.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        self.status_var.set(f"Профиль '{name}' сохранён")
+        self.refresh_profiles_list()
+    
+    def load_profile(self, name="default"):
+        path = f"profiles/{name}.json"
+        if not os.path.exists(path):
+            return False
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.actions = data['actions']
+            self.update_actions_list()
+            if 'settings' in data:
+                s = data['settings']
+                self.delay_from.delete(0, tk.END)
+                self.delay_from.insert(0, s.get('delay_from', '0.5'))
+                self.delay_to.delete(0, tk.END)
+                self.delay_to.insert(0, s.get('delay_to', '1.5'))
+                self.jitter.delete(0, tk.END)
+                self.jitter.insert(0, s.get('jitter', '5'))
+                self.micro_jitter.delete(0, tk.END)
+                self.micro_jitter.insert(0, s.get('micro_jitter', '0.3'))
+                self.auto_start.set(s.get('auto_start', True))
+                self.repeat_count.delete(0, tk.END)
+                self.repeat_count.insert(0, s.get('repeat_count', '0'))
+                self.random_skip.set(s.get('random_skip', True))
+                self.limit_time.set(s.get('limit_time', False))
+                self.time_limit_min.delete(0, tk.END)
+                self.time_limit_min.insert(0, s.get('time_limit_min', '60'))
+                self.sound_enabled.set(s.get('sound_enabled', True))
+                self.screenshot_enabled.set(s.get('screenshot_enabled', False))
+            self.status_var.set(f"Профиль '{name}' загружен")
+            return True
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось загрузить: {e}")
+            return False
+    
+    def load_profile_dialog(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Загрузить профиль")
+        dialog.geometry("300x400")
+        tk.Label(dialog, text="Выберите профиль:").pack(pady=10)
+        listbox = tk.Listbox(dialog)
+        listbox.pack(fill="both", expand=True, padx=10)
+        if os.path.exists("profiles"):
+            for f in os.listdir("profiles"):
+                if f.endswith(".json"):
+                    listbox.insert(tk.END, f[:-5])
+        def load():
+            sel = listbox.curselection()
+            if sel:
+                name = listbox.get(sel[0])
+                self.profile_name.delete(0, tk.END)
+                self.profile_name.insert(0, name)
+                self.load_profile(name)
+                dialog.destroy()
+        tk.Button(dialog, text="Загрузить", command=load, bg=self.colors['success'], fg="white").pack(pady=10)
+    
+    def load_selected_profile(self, event):
+        sel = self.profiles_listbox.curselection()
+        if sel:
+            name = self.profiles_listbox.get(sel[0])
+            self.load_profile(name)
+    
+    def refresh_profiles_list(self):
+        self.profiles_listbox.delete(0, tk.END)
+        if os.path.exists("profiles"):
+            for f in sorted(os.listdir("profiles")):
+                if f.endswith(".json"):
+                    self.profiles_listbox.insert(tk.END, f[:-5])
+    
+    def on_closing(self):
+        if self.running:
+            self.running = False
+            time.sleep(0.5)
+        self.schedule_running = False
+        self.root.destroy()
+
+if __name__ == "__main__":
+    try:
+        import pynput
+        import pygetwindow
+        import schedule
+        from PIL import ImageGrab
+    except ImportError:
+        import subprocess
+        subprocess.check_call(['pip', 'install', 'pynput', 'pygetwindow', 'schedule', 'pillow'])
+    root = tk.Tk()
+    app = MacroClicker(root)
+    root.mainloop()
